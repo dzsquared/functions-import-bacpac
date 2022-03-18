@@ -1,0 +1,10 @@
+POST http://localhost:7071/api/ImportBacpac
+
+
+###
+POST http://localhost:7071/api/ImportBacpac
+Content-Type: application/json
+
+{
+    "sqlDatabaseName": "sometestdbimport"
+}

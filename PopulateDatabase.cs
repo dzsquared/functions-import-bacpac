@@ -17,9 +17,9 @@ using Azure.Storage.Blobs;
 
 namespace Azure.Samples
 {
-    public static class ImportBacpac
+    public static class PopulateDatabase
     {
-        [FunctionName("ImportBacpac")]
+        [FunctionName("PopulateDatabase")]
         public static async Task<IActionResult> Run(
             [HttpTrigger(AuthorizationLevel.Function, "post", Route = null)] HttpRequest req,
             ILogger log)
@@ -34,7 +34,7 @@ namespace Azure.Samples
                 // get blob storage values from post body or app settings
                 string storageConnectionString = data?.AzureStorageConnectionString ?? Environment.GetEnvironmentVariable("AzureStorageConnectionString");
                 string containerName = data?.AzureStorageContainerName ?? Environment.GetEnvironmentVariable("AzureStorageContainerName");
-                string bacpacName = data?.BacpacName ?? Environment.GetEnvironmentVariable("BacpacName");
+                string fileName = data?.FileName ?? Environment.GetEnvironmentVariable("FileName");
 
                 // get sql values from post body or app settings
                 string sqlServerName = data?.sqlServerName ?? Environment.GetEnvironmentVariable("sqlServerName");
@@ -42,11 +42,16 @@ namespace Azure.Samples
                 string sqlPassword = data?.sqlPassword ?? Environment.GetEnvironmentVariable("sqlPassword");
                 string sqlUser = data?.sqlUser ?? Environment.GetEnvironmentVariable("sqlUser");
 
+                // check if bacpac name ends in .bacpac
+                if (!(fileName.ToLower().EndsWith(".bacpac") || fileName.ToLower().EndsWith(".dacpac"))) {
+                    return new BadRequestObjectResult("File to import must end in .bacpac or .dacpac");
+                }
+
                 // load the bacpac into a stream
                 BlobServiceClient blobServiceClient = new BlobServiceClient(storageConnectionString);
                 BlobContainerClient containerClient = blobServiceClient.GetBlobContainerClient(containerName);
                 var blobStream = new MemoryStream();
-                BlobClient blobClient = containerClient.GetBlobClient(bacpacName);
+                BlobClient blobClient = containerClient.GetBlobClient(fileName);
                 await blobClient.DownloadToAsync(blobStream);
 
                 // check if the database is active
@@ -74,19 +79,35 @@ namespace Azure.Samples
                 }
 
                 // import bacpac
-                log.LogInformation("Server is connectable, importing bacpac");
+                if (fileName.ToLower().EndsWith(".bacpac")) {
+                    log.LogInformation("Server is connectable, importing bacpac");
 
-                var dacServices = new DacServices(connectionString);
-                var bacPackage = BacPackage.Load(blobStream);
-                var options = new DacImportOptions
-                    {
-                        ImportContributors = "Azure.Samples.ImportFixer"
-                    };
-                dacServices.ImportBacpac(bacPackage, sqlDatabaseName, options, null);
-                var dacPackage = DacPackage.Load(blobStream);
-                log.LogInformation("Successfully imported bacpac");
+                    var dacServices = new DacServices(connectionString);
+                    var bacPackage = BacPackage.Load(blobStream);
+                    var options = new DacImportOptions
+                        {
+                            ImportContributors = "Azure.Samples.ImportFixer"
+                        };
+                    dacServices.ImportBacpac(bacPackage, sqlDatabaseName, options, null);
+                    log.LogInformation("Successfully imported bacpac");
 
-                return new OkObjectResult("Successfully imported bacpac");
+                    return new OkObjectResult("Successfully imported bacpac");
+                } else if (fileName.ToLower().EndsWith(".dacpac")) {
+                    log.LogInformation("Server is connectable, importing dacpac");
+
+                    var dacServices = new DacServices(connectionString);
+                    var dacPackage = DacPackage.Load(blobStream);
+                    var options = new DacDeployOptions
+                        {
+                            AdditionalDeploymentContributors = "Azure.Samples.ImportFixer"
+                        };
+                    dacServices.Deploy(dacPackage, sqlDatabaseName, false, options, null);
+                    log.LogInformation("Successfully imported dacpac");
+
+                    return new OkObjectResult("Successfully imported dacpac");
+                } else {
+                    return new BadRequestObjectResult("File to import must end in .bacpac or .dacpac");
+                }
             } catch (Exception ex) {
                 log.LogError($"Failed to import bacpac, exception: {ex.Message}");
                 return new BadRequestObjectResult($"Failed to import bacpac: {ex.Message}");

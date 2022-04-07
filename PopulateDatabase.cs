@@ -6,11 +6,11 @@ using System.IO;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Azure.WebJobs;
+using Microsoft.Azure.WebJobs.Extensions.DurableTask;
 using Microsoft.Azure.WebJobs.Extensions.Http;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
 using Newtonsoft.Json;
-
 using Microsoft.SqlServer.Dac;
 using Microsoft.Data.SqlClient;
 using Azure.Storage.Blobs;
@@ -24,12 +24,57 @@ namespace Azure.Samples
             [HttpTrigger(AuthorizationLevel.Function, "post", Route = null)] HttpRequest req,
             ILogger log)
         {
+            string requestBody = await new StreamReader(req.Body).ReadToEndAsync();
+            ActionStatus status = await RunDacFx(requestBody, log);
+            if ( status.StatusCode == 200 ) {
+                return new OkObjectResult(status.Message);
+            } else {
+                return new BadRequestObjectResult(status.Message);
+            }
+        }
+
+        [FunctionName("DurablePopulateDatabase")]
+        public static async Task<ActionStatus> RunOrchestrator(
+            [OrchestrationTrigger] IDurableOrchestrationContext context)
+        {
+            var output = new ActionStatus();
+            string requestBody = context.GetInput<string>();
+
+            output = await context.CallActivityAsync<ActionStatus>("RunDacFx", requestBody);
+
+            return output;
+        }
+
+        [FunctionName("DurablePopulateDatabase_HttpStart")]
+        public static async Task<IActionResult> HttpStart(
+            [HttpTrigger(AuthorizationLevel.Anonymous, "get", "post")] HttpRequest req,
+            [DurableClient] IDurableOrchestrationClient starter,
+            ILogger log)
+        {
+            // Function input comes from the request content.
+            string requestBody = await new StreamReader(req.Body).ReadToEndAsync();
+            string instanceId = await starter.StartNewAsync("DurablePopulateDatabase", null, requestBody);
+
+            log.LogInformation($"Started orchestration with ID = '{instanceId}'.");
+
+            return starter.CreateCheckStatusResponse(req, instanceId);
+        }
+
+        [FunctionName("RunDacFx")]
+        public static async Task<ActionStatus> RunDacFxAction([ActivityTrigger] string requestBody, ILogger log)
+        {
+            return await RunDacFx(requestBody, log);
+        }
+
+        public static async Task<ActionStatus> RunDacFx(string requestBody, ILogger log)
+        {
+            ActionStatus status = new ActionStatus();
+            status.StatusCode = 400;
             try {
-                
                 log.LogInformation("C# HTTP trigger function processed a request.");
 
-                string requestBody = await new StreamReader(req.Body).ReadToEndAsync();
                 dynamic data = JsonConvert.DeserializeObject(requestBody);
+                log.LogInformation($"Request body: {requestBody}");
 
                 // get blob storage values from post body or app settings
                 string storageConnectionString = data?.AzureStorageConnectionString ?? Environment.GetEnvironmentVariable("AzureStorageConnectionString");
@@ -44,7 +89,8 @@ namespace Azure.Samples
 
                 // check if bacpac name ends in .bacpac
                 if (!(fileName.ToLower().EndsWith(".bacpac") || fileName.ToLower().EndsWith(".dacpac"))) {
-                    return new BadRequestObjectResult("File to import must end in .bacpac or .dacpac");
+                    status.Message = "File to import must end in .bacpac or .dacpac";
+                    return status;
                 }
 
                 // load the bacpac into a stream
@@ -75,7 +121,8 @@ namespace Azure.Samples
                     }
                 }
                 if (!isConnectable) {
-                    return new BadRequestObjectResult("Master database is not connectable");
+                    status.Message = "Master database is not connectable";
+                    return status;
                 }
 
                 // import bacpac
@@ -90,8 +137,9 @@ namespace Azure.Samples
                         };
                     dacServices.ImportBacpac(bacPackage, sqlDatabaseName, options, null);
                     log.LogInformation("Successfully imported bacpac");
-
-                    return new OkObjectResult("Successfully imported bacpac");
+                    status.StatusCode = 200;
+                    status.Message = "Successfully imported bacpac";
+                    return status;
                 } else if (fileName.ToLower().EndsWith(".dacpac")) {
                     log.LogInformation("Server is connectable, importing dacpac");
 
@@ -101,17 +149,27 @@ namespace Azure.Samples
                         {
                             AdditionalDeploymentContributors = "Azure.Samples.ImportFixer"
                         };
-                    dacServices.Deploy(dacPackage, sqlDatabaseName, false, options, null);
+                    dacServices.Deploy(dacPackage, sqlDatabaseName, true, options, null);
                     log.LogInformation("Successfully imported dacpac");
 
-                    return new OkObjectResult("Successfully imported dacpac");
+                    status.StatusCode = 200;
+                    status.Message = "Successfully imported dacpac";
+                    return status;
                 } else {
-                    return new BadRequestObjectResult("File to import must end in .bacpac or .dacpac");
+                    status.Message = "File to import must end in .bacpac or .dacpac";
+                    return status;
                 }
             } catch (Exception ex) {
                 log.LogError($"Failed to import bacpac, exception: {ex.Message}");
-                return new BadRequestObjectResult($"Failed to import bacpac: {ex.Message}");
+                status.Message = $"Failed to import bacpac: {ex.Message}";
+                return status;
             }
         }
     }
+
+    public class ActionStatus {
+        public int StatusCode { get; set; }
+        public string Message { get; set; }
+    }
+
 }

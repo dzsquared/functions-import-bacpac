@@ -8,3 +8,16 @@ Content-Type: application/json
 {
     "sqlDatabaseName": "sometestdbimport"
 }
+
+
+###
+POST http://localhost:7071/api/DurablePopulateDatabase_HttpStart
+
+
+###
+POST http://localhost:7071/api/DurablePopulateDatabase_HttpStart
+Content-Type: application/json
+
+{
+    "sqlDatabaseName": "sometestdbimport"
+}
